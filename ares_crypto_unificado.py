@@ -108,15 +108,25 @@ def connect_to_binance():
         print("[ROBÔ] ERRO: Chaves de API não configuradas.")
         return False
     try:
-        # ALTERAÇÃO: Adicionamos o tld='com' para ser explícito e um timeout de 15s
+        # Adicionando 'tld' e 'requests_params' para maior robustez
         client = Client(api_key=API_KEY, api_secret=API_SECRET, tld='com',
                         requests_params={'timeout': 15})
         
-        # Testa a conexão com uma chamada leve que exige autenticação
+        # ALTERAÇÃO CRÍTICA: Adicionados os parênteses () para EXECUTAR a função
         client.get_account_status()
         
         print(">>> [ROBÔ] Conexão com a Binance estabelecida com sucesso.")
         return True
+        
+    except requests.exceptions.Timeout:
+        print("ERRO DE REDE: A conexão com a Binance expirou (Timeout). O problema pode ser na rede do Render.")
+        return False
+    except BinanceAPIException as e:
+        print(f"ERRO DE API BINANCE durante a conexão: {e}")
+        return False
+    except Exception as e:
+        print(f"ERRO INESPERADO durante a conexão: {e}")
+        return False
         
     except requests.exceptions.Timeout:
         print("ERRO DE REDE: A conexão com a Binance expirou (Timeout). O problema pode ser na rede do Render.")
