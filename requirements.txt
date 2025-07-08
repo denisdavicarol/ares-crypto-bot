@@ -1,7 +1,7 @@
 setuptools
 flask
 requests
-numpy
-pandas
-pandas-ta
+numpy==1.26.4
+pandas==2.2.2
+pandas-ta==0.3.14b0
 python-binance
