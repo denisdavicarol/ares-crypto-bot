@@ -1,8 +1,7 @@
 # ==============================================================================
-#      SISTEMA ARES CRYPTO UNIFICADO v3.2 - VERSÃO COMPLETA E FUNCIONAL
+#      SISTEMA ARES CRYPTO UNIFICADO v4.1 - VERSÃO COMPLETA E FUNCIONAL
 # ==============================================================================
-# Este script único roda tanto o Cérebro de análise quanto o Robô Executor
-# da Binance em paralelo, otimizado para rodar em serviços como o Render.com
+# Este script único roda o Cérebro e o Robô Executor em paralelo.
 
 import time
 import requests
@@ -13,14 +12,13 @@ from binance.exceptions import BinanceAPIException
 import numpy as np
 import pandas as pd
 import pandas_ta as ta
+from flask import Flask, jsonify
+import logging
 
 # --- 1. CONFIGURAÇÕES GERAIS ---
 API_KEY = os.environ.get('API_KEY')
 API_SECRET = os.environ.get('API_SECRET')
-API_KEYS_AV = [
-    "9W8QUYEG89T78GYP", "51OICUVQT4MMJB4K", "EAUKTIO79NZ1HJW2", "SUDMKRZOWRXCRZYT",
-    "1YUAECGWJ20K0BRS", "WNPDEZ9P81S5RBZB", "DDKH8ODKHCUTQ4GK", "275RKW6RCGQX8DMZ"
-]
+API_KEYS_AV = [ "9W8QUYEG89T78GYP", "51OICUVQT4MMJB4K", "EAUKTIO79NZ1HJW2", "SUDMKRZOWRXCRZYT", "1YUAECGWJ20K0BRS", "WNPDEZ9P81S5RBZB", "DDKH8ODKHCUTQ4GK", "275RKW6RCGQX8DMZ" ]
 CRYPTO_TICKER_SENTIMENT = "BTC,ETH"
 CRYPTO_TICKER_TREND = "BTC-USD" 
 SYMBOLS_TO_SCAN = ['BTCBRL', 'ETHBRL', 'SOLBRL', 'LINKBRL', 'ADABRL']
@@ -85,11 +83,9 @@ def analyze_market_and_update_state():
     global cerebro_data
     print("[CÉREBRO] Iniciando ciclo de análise...")
     sentiment_score = get_news_sentiment(CRYPTO_TICKER_SENTIMENT)
-    # A análise técnica agora é feita no robô para ser mais ágil
-    fluxo_score = sentiment_score # Foco no sentimento para o viés macro
-    
-    # A lógica de modo automático de volatilidade também passa para o robô
-    active_mode_str = "Médio" # Usando modo médio como padrão
+    # A análise de tendência técnica foi movida para o robô para ser mais ágil
+    fluxo_score = sentiment_score
+    active_mode_str = "Médio"
     limite_sinal = LIMIARES_RISCO.get(active_mode_str, 0.45)
     
     trade_bias = "NEUTRO"
@@ -99,7 +95,6 @@ def analyze_market_and_update_state():
     cerebro_data['trade_bias'] = trade_bias
     cerebro_data['active_mode'] = f"Modo: {active_mode_str} (Sent. Score: {fluxo_score:.4f})"
     print(f"[CÉREBRO] Análise concluída. Novo viés: {trade_bias}")
-
 
 # ==============================================================================
 # 3. LÓGICA DO ROBÔ EXECUTOR (Funções de Trading)
@@ -112,9 +107,8 @@ def connect_to_binance():
         return False
     try:
         client = Client(API_KEY, API_SECRET)
-        # Sincroniza o tempo com o servidor da Binance para evitar erros de timestamp
-        server_time = client.get_server_time()
-        print(f">>> [ROBÔ] Conexão com a Binance estabelecida com sucesso. Latência: {int(time.time()*1000) - server_time['serverTime']}ms")
+        client.get_account()
+        print(">>> [ROBÔ] Conexão com a Binance estabelecida com sucesso.")
         return True
     except Exception as e:
         print(f"ERRO DE API BINANCE: {e}")
@@ -131,10 +125,9 @@ def determinar_regime_local(df):
         df.ta.bbands(length=SQUEEZE_PERIOD, append=True)
         df.ta.kc(length=SQUEEZE_PERIOD, append=True)
         last = df.iloc[-1]
-        if last[f'BBU_{SQUEEZE_PERIOD}_2.0'] < last[f'KCUe_{SQUEEZE_PERIOD}_2.0'] and last[f'BBL_{SQUEEZE_PERIOD}_2.0'] > last[f'KCLe_{SQUEEZE_PERIOD}_2.0']:
+        if last[f'BBU_{SQUEEZE_PERIOD}_2.0'] < last[f'KCUe_{SQUEEZE_PERIOD}_1.5'] and last[f'BBL_{SQUEEZE_PERIOD}_2.0'] > last[f'KCLe_{SQUEEZE_PERIOD}_1.5']:
             return "SQUEEZE"
-        else:
-            return "TENDENCIA"
+        return "TENDENCIA"
     except Exception: return "TENDENCIA"
 
 def buscar_gatilhos_tendencia(df, symbol, trade_bias):
@@ -142,7 +135,6 @@ def buscar_gatilhos_tendencia(df, symbol, trade_bias):
         df.ta.ema(length=EMA_FAST_PERIOD, append=True)
         df.ta.ema(length=EMA_SLOW_PERIOD, append=True)
         df.ta.stoch(k=STOCH_K, d=STOCH_D, smooth_k=STOCH_SMOOTH, append=True)
-        
         last = df.iloc[-1]; prev = df.iloc[-2]
         current_price = float(client.get_symbol_ticker(symbol=symbol)['price'])
 
@@ -154,8 +146,7 @@ def buscar_gatilhos_tendencia(df, symbol, trade_bias):
             if prev[f'STOCHk_{STOCH_K}_{STOCH_D}_{STOCH_SMOOTH}'] > 50 and last[f'STOCHk_{STOCH_K}_{STOCH_D}_{STOCH_SMOOTH}'] < 50: return "Pullback"
             if last[f'EMA_{EMA_FAST_PERIOD}'] < last[f'EMA_{EMA_SLOW_PERIOD}'] and last['high'] > last[f'EMA_{EMA_FAST_PERIOD}'] and last['close'] < last[f'EMA_{EMA_FAST_PERIOD}']: return "Ignicao"
             if current_price < df['low'][-MOMENTUM_PERIOD-1:-1].min(): return "Momentum"
-    except Exception as e:
-        print(f"Erro nos gatilhos de tendência para {symbol}: {e}")
+    except Exception as e: print(f"[ROBÔ] Erro nos gatilhos de tendência para {symbol}: {e}")
     return None
 
 def buscar_gatilho_squeeze(df, symbol, trade_bias):
@@ -165,17 +156,14 @@ def buscar_gatilho_squeeze(df, symbol, trade_bias):
         current_price = float(client.get_symbol_ticker(symbol=symbol)['price'])
         if trade_bias == "COMPRADOR" and current_price > high_range: return "Squeeze"
         if trade_bias == "VENDEDOR" and current_price < low_range: return "Squeeze"
-    except Exception as e:
-        print(f"Erro no gatilho de squeeze para {symbol}: {e}")
+    except Exception as e: print(f"[ROBÔ] Erro no gatilho de squeeze para {symbol}: {e}")
     return None
 
 def check_for_entry():
-    global trade_state
     if trade_state['in_position']: return
-    
     trade_bias = cerebro_data.get('trade_bias', 'NEUTRO')
     if trade_bias == "NEUTRO":
-        print("[ROBÔ] Viés NEUTRO. Nenhuma ação.")
+        print("[ROBÔ] Viés do Cérebro está NEUTRO. Aguardando...")
         return
         
     print(f"[ROBÔ] Viés {trade_bias}. Escaneando {len(SYMBOLS_TO_SCAN)} pares...")
@@ -203,7 +191,7 @@ def place_order(symbol, side, df):
     try:
         df.ta.atr(length=ATR_PERIOD, append=True)
         atr = df.iloc[-1][f'ATRr_{ATR_PERIOD}']
-        if atr == 0:
+        if atr <= 0:
             print(f"ERRO: ATR para {symbol} é zero. Abortando trade.")
             return
 
@@ -212,7 +200,8 @@ def place_order(symbol, side, df):
         
         info = client.get_symbol_info(symbol)
         step_size = float([f['stepSize'] for f in info['filters'] if f['filterType'] == 'LOT_SIZE'][0])
-        quantity = round(quantity / step_size) * step_size
+        min_qty = float([f['minQty'] for f in info['filters'] if f['filterType'] == 'LOT_SIZE'][0])
+        quantity = max(round(quantity / step_size) * step_size, min_qty)
 
         print(f"Enviando ordem a mercado: {side} {quantity:.8f} {symbol}")
         order = client.create_order(symbol=symbol, side=side, type=Client.ORDER_TYPE_MARKET, quantity=quantity)
@@ -221,7 +210,6 @@ def place_order(symbol, side, df):
         trade_state.update({'in_position': True, 'symbol': symbol, 'side': side, 'entry_price': entry_price, 'quantity': quantity})
         print(f"ORDEM EXECUTADA @ {entry_price}")
         place_oco_exit_orders(atr)
-
     except Exception as e:
         print(f"ERRO AO ENVIAR ORDEM DE ENTRADA: {e}")
 
@@ -237,7 +225,6 @@ def place_oco_exit_orders(atr):
     else: # SELL
         stop_loss_price = entry_price + (atr * SL_ATR_MULTIPLIER)
         take_profit_price = entry_price - (atr * TP_ATR_MULTIPLIER)
-        side_oco = Client.SIDE_BUY
         
     info = client.get_symbol_info(symbol)
     tick_size = float([f['tickSize'] for f in info['filters'] if f['filterType'] == 'PRICE_FILTER'][0])
@@ -248,12 +235,12 @@ def place_oco_exit_orders(atr):
     
     try:
         print(f"Enviando ordem OCO para {symbol}: Alvo={take_profit_price:.4f}, Stop={stop_loss_price:.4f}")
-        oco_order = client.create_oco_order(symbol=symbol, side=side_oco, quantity=trade_state['quantity'], price=f"{take_profit_price:.8f}", stopPrice=f"{stop_loss_price:.8f}", stopLimitPrice=f"{stop_loss_price:.8f}", stopLimitTimeInForce='GTC')
-        trade_state['oco_order_id'] = oco_order['orderReports'][0]['orderListId']
-        print(f"Ordem OCO (Alvo/Stop) posicionada com sucesso. OrderListId: {trade_state['oco_order_id']}")
+        oco_order = client.create_oco_order(symbol=symbol,side=side_oco,quantity=trade_state['quantity'],price=f"{take_profit_price:.8f}",stopPrice=f"{stop_loss_price:.8f}",stopLimitPrice=f"{stop_loss_price:.8f}",stopLimitTimeInForce='GTC')
+        trade_state['oco_order_id'] = oco_order['orderListId']
+        print(f"Ordem OCO (Alvo/Stop) posicionada. OrderListId: {trade_state['oco_order_id']}")
     except Exception as e:
-        print(f"ERRO AO ENVIAR ORDEM OCO. Tentando fechar a posição por segurança: {e}")
-        close_position(trade_state['entry_price'])
+        print(f"ERRO AO ENVIAR ORDEM OCO. Fechando posição por segurança: {e}")
+        close_position()
 
 def manage_position():
     global trade_state
@@ -262,57 +249,56 @@ def manage_position():
     symbol = trade_state['symbol']
     print(f"Gerenciando posição de {trade_state['side']} em {symbol}...")
     
-    # Checa se a posição foi fechada pelo OCO
     try:
         orders = client.get_all_orders(symbol=symbol, orderListId=trade_state['oco_order_id'])
-        # Se ambas as ordens (STOP_LOSS e LIMIT_MAKER) não estiverem mais ativas, a posição foi fechada.
         if all(o['status'] not in ['NEW', 'PARTIALLY_FILLED'] for o in orders):
             print(f"Posição em {symbol} fechada por Alvo ou Stop da ordem OCO.")
-            # Aqui buscaríamos o preço de fechamento no histórico para o P/L, por simplicidade vamos apenas resetar.
             trade_state = {'in_position': False, 'symbol': None}
             return
-    except Exception as e:
-        print(f"Aviso: Não foi possível checar ordem OCO (pode já ter sido executada/cancelada): {e}")
-        # Se não encontrarmos a ordem OCO, é provável que ela foi fechada/cancelada. Resetamos.
+    except Exception:
         trade_state = {'in_position': False, 'symbol': None}
         return
 
-    # Lógica de Saída por Invalidação de Viés
     trade_bias = cerebro_data.get('trade_bias', 'NEUTRO')
     if (trade_state['side'] == Client.SIDE_BUY and trade_bias == "VENDEDOR") or \
        (trade_state['side'] == Client.SIDE_SELL and trade_bias == "COMPRADOR"):
         print(f"ALERTA ESTRATÉGICO: Viés reverteu. Fechando posição em {symbol}...")
-        close_position(float(client.get_symbol_ticker(symbol=symbol)['price']))
+        close_position()
 
-def close_position(exit_price):
+def close_position():
     global trade_state
     symbol = trade_state['symbol']
     try:
         if trade_state.get('oco_order_id'):
-            print(f"Cancelando ordem OCO {trade_state['oco_order_id']} para {symbol}...")
             client.cancel_order(symbol=symbol, orderListId=trade_state['oco_order_id'])
-    except BinanceAPIException as e:
-        print(f"Aviso ao cancelar ordem OCO para {symbol}: {e}")
-
+    except Exception as e: print(f"Aviso ao cancelar ordem OCO: {e}")
     try:
         side_to_close = Client.SIDE_SELL if trade_state['side'] == Client.SIDE_BUY else Client.SIDE_BUY
         order = client.create_order(symbol=symbol, side=side_to_close, type=Client.ORDER_TYPE_MARKET, quantity=trade_state['quantity'])
         print(f"POSIÇÃO ZERADA COM SUCESSO @ {order['fills'][0]['price']}!")
-    except Exception as e:
-        print(f"ERRO CRÍTICO AO TENTAR ZERAR A POSIÇÃO de {symbol}: {e}")
+    except Exception as e: print(f"ERRO CRÍTICO AO TENTAR ZERAR A POSIÇÃO: {e}")
     finally:
-        # Reset do estado
         trade_state = {'in_position': False, 'symbol': None}
 
 # ==============================================================================
-# 5. FUNÇÕES PRINCIPAIS E THREADING
+# 5. LÓGICA DO SERVIDOR DE FACHADA (FLASK)
 # ==============================================================================
+app = Flask(__name__)
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
 
+@app.route('/')
+def health_check():
+    return jsonify(status="online", bot_status=trade_state, cerebro_status=cerebro_data), 200
+
+# ==============================================================================
+# 6. INICIALIZAÇÃO E THREADING
+# ==============================================================================
 def run_cerebro_loop():
     print(">>> Thread do CÉREBRO iniciada.")
     while True:
         try:
-            analyze_market_and_update_state(volatilidade_local=1.5) 
+            analyze_market_and_update_state()
             time.sleep(INTERVALO_ANALISE_CEREBRO)
         except Exception as e:
             print(f"ERRO na thread do Cérebro: {e}")
@@ -335,15 +321,21 @@ def run_robo_executor_loop():
             print(f"ERRO no loop do robô: {e}")
             time.sleep(60)
 
+def run_flask_app():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
 if __name__ == '__main__':
     cerebro_thread = threading.Thread(target=run_cerebro_loop)
     robo_thread = threading.Thread(target=run_robo_executor_loop)
-    
+    flask_thread = threading.Thread(target=run_flask_app)
+
     print("\n================================================")
-    print("=     SISTEMA ARES CRYPTO UNIFICADO v3.1       =")
-    print("=      Cérebro e Robô rodando em paralelo.     =")
+    print("=     SISTEMA ARES CRYPTO UNIFICADO v4.1       =")
+    print("=      Iniciando todos os serviços...          =")
     print("================================================\n")
 
     cerebro_thread.start()
     time.sleep(5) 
     robo_thread.start()
+    flask_thread.start()
