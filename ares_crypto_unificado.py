@@ -103,17 +103,30 @@ def analyze_market_and_update_state():
 # ==============================================================================
 def connect_to_binance():
     global client
-    print("[ROBÔ] Tentando conectar à Binance...")
+    print("[ROBÔ] Tentando conectar à Binance com configuração de rede robusta...")
     if not API_KEY or not API_SECRET:
-        print("[ROBÔ] ERRO: Chaves de API não configuradas. Verifique as Variáveis de Ambiente no Render.")
+        print("[ROBÔ] ERRO: Chaves de API não configuradas.")
         return False
     try:
-        client = Client(API_KEY, API_SECRET)
-        client.get_account()
+        # ALTERAÇÃO: Adicionamos o tld='com' para ser explícito e um timeout de 15s
+        client = Client(api_key=API_KEY, api_secret=API_SECRET, tld='com',
+                        requests_params={'timeout': 15})
+        
+        # Testa a conexão com uma chamada leve que exige autenticação
+        client.get_account_status()
+        
         print(">>> [ROBÔ] Conexão com a Binance estabelecida com sucesso.")
         return True
+        
+    except requests.exceptions.Timeout:
+        print("ERRO DE REDE: A conexão com a Binance expirou (Timeout). O problema pode ser na rede do Render.")
+        return False
+    except BinanceAPIException as e:
+        # Se o erro for de timestamp, mesmo após as correções, veremos aqui
+        print(f"ERRO DE API BINANCE durante a conexão: {e}")
+        return False
     except Exception as e:
-        print(f"ERRO DE API BINANCE: {e}")
+        print(f"ERRO INESPERADO durante a conexão: {e}")
         return False
 
 def get_klines_as_df(symbol, interval, limit):
